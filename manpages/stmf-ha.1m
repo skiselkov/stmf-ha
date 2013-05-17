@@ -24,10 +24,6 @@ stmf-ha \- manages SCSI Target Mode Framework High-Availability
 .nf
 \fBstmf-ha\fR \fBverify\fR \fIpoolname\fR
 .fi
-.sp
-.nf
-\fBstmf-ha\fR \fBupdate\fR
-.fi
 .SH DESCRIPTION
 .sp
 .LP
@@ -79,13 +75,13 @@ runtime COMSTAR state and allow you to export the pool cleanly.
 Once you start using \fBstmf-ha\fR, keep in mind that any and all
 COMSTAR configuration should be done in a way that will enable
 \fBstmf-ha\fR to restore it in case a cluster node fail-over occurs.
-When you invoke \fBstmf-ha start\fR or \fBstmf-ha update\fR for the
-first time, it will switch your COMSTAR implementation over into
-non-persistent mode. In practical terms, this means that you must
-refrain from using most \fBstmfadm\fR(1M), \fBsbdadm\fR(1M) and
-\fBitadm\fR(1M) commands (subject to some exceptions mentioned below).
-\fBstmf-ha\fR will allow you to set up most things that are possible
-using the above commands in a persistent and clusterable way.
+When you invoke \fBstmf-ha start\fR for the first time, it will switch
+your COMSTAR implementation over into non-persistent mode. In practical
+terms, this means that you must refrain from using most
+\fBstmfadm\fR(1M), \fBsbdadm\fR(1M) and \fBitadm\fR(1M) commands
+(subject to some exceptions mentioned below). \fBstmf-ha\fR will allow
+you to set up most things that are possible using the above commands in
+a persistent and clusterable way.
 .sp
 This only affects block-oriented storage protocols served by COMSTAR. It
 does not affect NFS or CIFS or any file-oriented storage protocol (which

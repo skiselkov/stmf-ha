@@ -623,12 +623,11 @@ function stop_stmf_ha_pool () {
 	rm "$RUNTIME_DIR/$POOL-cached-stmf-ha.conf"
 }
 
-function stmf_ha_update_all () {
-	echo -n "Updating all STMF High-Availability ... "
+function stmf_ha_start_all () {
+	echo -n "Updating STMF-HA on all pools ..."
 	"$ZPOOL" list -H | while read pool rest; do
 		if [ -f "/$pool/stmf-ha.conf" ]; then
-			POOL="$pool"
-			config_stmf_ha_pool
+			"$0" start "$pool"
 		fi
 	done
 	echo "done"
@@ -655,18 +654,19 @@ $0 [start|stop] <poolname>
 	the pool can be in any state, STMF resources should be released
 	from it.
 
+	When using "start" and specifying "all" for the <poolname>,
+	"start" is called for all imported pools which have an
+	stmf-ha.conf file on them. This is a shorthand after you have
+	added ZFS volumes or modified the STMF-HA configuration on
+	multiple pools and you don't want to call "start" on each one.
+	For obvious reasons "stop all" isn't allowed.
+
 $0 verify <poolname>
 
 	Verifies the syntax in the stmf-ha.conf configuration file on
 	pool <poolname>. Always check your configuration before applying
 	it.
 
-$0 update
-
-	Invokes "start" for all imported pools which have an
-	stmf-ha.conf file on them. This is a shorthand after you have
-	added ZFS volumes or modified a particular pool's STMF-HA
-	configuration.
 
 $0 -V
 
@@ -695,13 +695,15 @@ function check_got_pool () {
 setup_defaults
 setup_runtime
 
-if [[ "$COMMAND" == "update" ]]; then
-	stmf_ha_update_all
-elif [[ "$COMMAND" == "-h" ]]; then
+if [[ "$COMMAND" == "-h" ]]; then
 	print_help
 elif [[ "$COMMAND" == "-V" ]]; then
 	print_version
 elif [[ "$COMMAND" == "start" ]]; then
+	if [[ "$POOL" == "all" ]]; then
+		stmf_ha_start_all
+		exit 0
+	fi
 	check_got_pool
 	config_stmf_ha_pool "$POOL"
 elif [[ "$COMMAND" == "stop" ]]; then
