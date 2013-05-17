@@ -61,7 +61,7 @@ END
 }
 
 zpool_is_imported () {
-    zpool list -H "$OCF_RESKEY_pool" > /dev/nul
+    zpool list -H "$OCF_RESKEY_pool" > /dev/null
 }
 
 # Forcibly imports a ZFS pool, mounting all of its auto-mounted filesystems
