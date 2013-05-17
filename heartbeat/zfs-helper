@@ -1,0 +1,21 @@
+#!/bin/bash
+# Simple helper for the OCF ZFS scripts which invokes STMF-HA on the
+# imported/exported pool. Place this script in
+# ${OCF_ROOT}/lib/heartbeat/helpers
+
+STMF_HA="stmf-ha"
+
+case "$1" in
+	pre-import)
+		exit 0;;
+	post-import)
+		"$STMF_HA" start "$2";;
+	pre-export)
+		"$STMF_HA" stop "$2";;
+	post-export)
+		exit 0;;
+	*)	echo "Usage: $0" \
+		     "[pre-import|post-import|pre-export|post-export]" \
+		     "<poolname>" >&2
+		exit 1;;
+esac

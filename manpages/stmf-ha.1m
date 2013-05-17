@@ -1,0 +1,367 @@
+'\" t
+.\"
+.TH STMF-HA 1M "May 16, 2013"
+.SH NAME
+stmf-ha \- manages SCSI Target Mode Framework High-Availability
+.SH SYNOPSIS
+.LP
+.nf
+\fBstmf-ha\fR [\fB-h\fR]
+.fi
+.sp
+.nf
+\fBstmf-ha\fR \fB-V\fR
+.fi
+.sp
+.nf
+\fBstmf-ha\fR \fBstart\fR \fIpoolname\fR
+.fi
+.sp
+.nf
+\fBstmf-ha\fR \fBstop\fR \fIpoolname\fR
+.fi
+.sp
+.nf
+\fBstmf-ha\fR \fBverify\fR \fIpoolname\fR
+.fi
+.sp
+.nf
+\fBstmf-ha\fR \fBupdate\fR
+.fi
+.SH DESCRIPTION
+.sp
+.LP
+The \fBstmf-ha\fR command provides and manages SCSI Target Mode
+Framework (STMF) High-Availaibility mechanisms. STMF is another name for
+the Common SCSI Target-Mode Framework (COMSTAR) in Illumos. In essence
+what STMF-HA does is provide a method to store and restore COMSTAR
+configuration pertaining to a particular pool on the pool itself. This
+makes it possible to easily implement high-available clusters which
+share a single \fBZFS\fR pool between themselves.
+.sp
+.SS "STMF-HA Configuration"
+.sp
+.LP
+The \fBstmf-ha\fR command relies on storing a persistent configuration
+on the \fBZFS\fR pool itself. To start using \fBstmf-ha\fR on your
+high-available cluster, you need to do several things:
+.RS +4
+.TP
+.ie t \(bu
+.el o
+Create a configuration named \fIstmf-ha.conf\fR in the root of your pool
+(e.g. if your pool is named \fBtank\fR, then place the file at
+\fI/tank/stmf-ha.conf\fR). The file can be empty - this is the simplest
+\fBstmf-ha\fR configuration where you accept all the defaults.
+.RE
+.RS +4
+.TP
+.ie t \(bu
+.el o
+Configure your clustering scripts to invoke \fBstmf-ha\fR after import of
+the pool with the \fIstart\fR argument and the name of the pool (e.g.
+\fIstmf-ha start tank\fR). This will cause \fBstmf-ha\fR to reconstruct
+the persistent COMSTAR configuration for the pool.
+.RE
+.RS +4
+.TP
+.ie t \(bu
+.el o
+Similarly to the above step, configure your clustering scripts to invoke
+\fBstmf-ha\fR before export of the pool with the \fIstop\fR argument and
+the name of the pool (e.g. \fIstmf-ha stop tank\fR). This will remove all
+runtime COMSTAR state and allow you to export the pool cleanly.
+.RE
+.RS +4
+.TP
+.ie t \(bu
+.el o
+Once you start using \fBstmf-ha\fR, keep in mind that any and all
+COMSTAR configuration should be done in a way that will enable
+\fBstmf-ha\fR to restore it in case a cluster node fail-over occurs.
+When you invoke \fBstmf-ha start\fR or \fBstmf-ha update\fR for the
+first time, it will switch your COMSTAR implementation over into
+non-persistent mode. In practical terms, this means that you must
+refrain from using most \fBstmfadm\fR(1M), \fBsbdadm\fR(1M) and
+\fBitadm\fR(1M) commands (subject to some exceptions mentioned below).
+\fBstmf-ha\fR will allow you to set up most things that are possible
+using the above commands in a persistent and clusterable way.
+.sp
+This only affects block-oriented storage protocols served by COMSTAR. It
+does not affect NFS or CIFS or any file-oriented storage protocol (which
+aren't handled by COMSTAR).
+.RE
+.RE
+.sp
+If you use \fIHeartbeat\fR with \fIPacemaker\fR for clustering, you can
+use the \fIZFS\fR and \fIzfs-helper\fR scripts from the \fBstmf-ha\fR
+package to manage ZFS resources and automatically cluster \fISTMF\fR.
+.SS Configuration File Syntax
+.sp
+.LP
+The \fIstmf-ha.conf\fR configuration file residing on a pool gives you a
+great deal of control over how \fBstmf-ha\fR operates. Rather than being
+a set of commands to execute at pool import, it is structured as a
+declarative configuration file, meaning, you declare the state of the
+COMSTAR framework you want to set up and \fBstmf-ha\fR ensures that the
+running COMSTAR configuration is installed correctly. The \fBstmf-ha\fR
+command is idempotent, meaning, you can invoke it several times even
+after pool import (or in fact after you have altered the configuration,
+subject to certain limitations) and it will take the "shortest" path
+towards ensuring that your running COMSTAR configuration matches the
+\fIstmf-ha.conf\fR file.
+.sp
+Fundamentally, the \fIstmf-ha.conf\fR file is just a BASH shell script,
+which is read by \fBstmf-ha\fR at startup to declare certain special
+variables. Therefore, while not encouraged, you can use arbitrary BASH
+code in the file to construct elaborate configurations -- this is
+probably a bad idea, though, since High-Availability is sufficiently
+complex as is. Keeping your configuration as simple as possible is the
+key to achieving predictable failure recovery in your cluster.
+.sp
+For a list of all available configuration file options please see
+\fI/usr/share/doc/stmf-ha/stmf-ha-sample.conf\fR.
+.sp
+.SS Configuration Changes
+.sp
+.LP
+When changing \fIstmf-ha.conf\fR, care must be taken to ensure that the
+file uses correct syntax. You can check this most easily by simply
+running \fBstmf-ha verify \fIpoolname\fR. This will parse the
+configuration file without actually doing anything. Please note that this
+is only a syntactic check, so if the configuration in it is nonsensical
+or non-executable, a \fBstmf-ha start\fR can still fail.
+.sp
+Whenever possible \fBstmf-ha\fR tries to gracefully reconfigure resources
+at runtime without actually taking anything online. In some cases this is
+not possible and these cases may need special handling:
+.RS +4
+.TP
+.ie t \(bu
+.el o
+If you manually configured targets, logical units, host groups or target
+groups in \fIstmf-ha.conf\fR and subsequently remove them, \fBstmf-ha\fR
+will not remove them from the running COMSTAR configuration. This is
+caused simply by the fact that \fRstmf-ha\fR uses the configuration file
+as the basis for what to do, and since the objects in question are no
+longer listed there, it doesn't know what to do with them. In that case,
+use the appropriate \fBstmfadm\fR(1M) or \fBitadm\fR(1M) command to
+remove the given object from the system manually.
+.RE
+.RS +4
+.TP
+.ie t \(bu
+.el o
+Creation of or changes to target groups cannot be made while the targets
+that are to be moved into or out of the group are online. If you change
+a target group, \fBstmf-ha\fR will temporarily offlines the targets that
+are to be manipulated. If the targets were online before, \fBstmf-ha\fR
+re-onlines them after that. This can cause a service disruption - your
+best bet is to probably avoid using target groups.
+.RE
+.RS +4
+.TP
+.ie t \(bu
+.el o
+There is a limit of one view per LU. This is a programmatic limitation in
+the design of \fBstmf-ha\fR that could be removed in the future, but I
+haven't had the need to do so yet myself.
+.RE
+.RS +4
+.TP
+.ie t \(bu
+.el o
+At the moment \fBstmf-ha\fR is limited to iSCSI targets. I do not have
+any FC or SRP hardware, and so cannot implement any other target types.
+.RE
+.RE
+
+.SH EXAMPLES
+.LP
+\fBExample 1 \fRCreating a simple ZFS pool with volumes exported by STMF-HA
+.LP
+The following set of commands creates a ZFS pool with some ZFS volumes which
+are then exported by \fBstmf-ha\fR over iSCSI.
+.sp
+.in +2
+.nf
+# \fBzpool create tank mirror c0t0d0 c0t1d0\fR
+# \fBzfs create tank/vm\fR
+# \fBzfs create -s -V 20g tank/vm/VM_A_lun:00\fR
+# \fBzfs create -s -V 30g tank/vm/VM_B_lun:01\fR
+# \fBtouch /tank/stmf-ha.conf\fR	# create empty \fIstmf-ha.conf\fR
+# \fBstmf-ha start tank\fR		# create and start STMF target and LUs
+.fi
+.in -2
+.sp
+We will modify the above example below by introducing changes to the
+\fIstmf-ha.conf\fR file to achieve various new behaviors.
+.LP
+\fBExample 2 \fRCreating iSCSI target portal groups
+.LP
+By default \fBstmf-ha\fR assigns iSCSI targets to the \fIdefault\fR target
+portal group, which means that the iSCSI target will be made available on
+all IP interfaces of the host. We can override this behavior by defining
+a set of target portal groups ourselves.
+.sp
+.in +2
+.nf
+\fBtarget_portal_groups=(\fR tpg01  tpg02 \fB)\fR
+\fBtpg01_portals=(\fR 192.168.1.1  192.168.1.2 \fB)\fR
+\fBtpg02_portals=(\fR 192.168.2.1:5000  192.168.3.1:5000 \fB)\fR
+.fi
+.in -2
+.sp
+If you define any target portal groups, \fBstmf-ha\fR will assume that
+you want to use them for your iSCSI targets, so rather than defaulting
+targets to the \fIdefault\fR target portal group, it will default to
+assigning targets to the first target portal group listed in
+\fItarget_portal_groups\fR. This can be further refined by overriding
+the \fIdefault_tpg\fR variable. Please note that this affects only the
+default target portal group which \fBstmf-ha\fR assigns, i.e. if you
+explicitly assign a given target to a target portal group (see Example 3
+below on how to do that), the default behavior doesn't apply.
+.sp
+.in +2
+.nf
+\fBtarget_portal_groups=(\fR tpg01  tpg02 \fB)\fR
+\fBtpg01_portals=(\fR 192.168.1.1  192.168.1.2 \fB)\fR
+\fBtpg02_portals=(\fR 192.168.2.1:5000  192.168.3.1:5000 \fB)\fR
+\fBdefault_tpg=\fRtpg02   # now the default is `tpg02' instead of `tpg01'
+\fR
+.fi
+.in -2
+.LP
+\fBExample 3 \fRCreating custom SCSI targets for the pool
+.LP
+By default \fBstmf-ha\fR creates one SCSI target per pool, defaulting to
+the \fIiscsi\fR target type. In the example below we override this
+behavior by declaring a \fItargets\fR array, which manually lists what
+targets we want \fBstmf-ha\fR to create.
+.sp
+.in +2
+.nf
+\fBtargets=(\fR target01  target02 \fB)\fR
+\fBtarget01_type=\fRiscsi    # this is the default type
+\fBtarget01_tpg=\fRtpg01     # if undefined, assigns the default tpg
+\fBtarget02_tpg=\fRtpg02
+.fi
+.in -2
+.sp
+For iSCSI, the target name determines the IQN of the target. This is
+automatically defined as "\fIiqn.2010-08.org.illumos:stmf-ha:\fBtargetname\fR".
+.LP
+\fBExample 4 \fRConfiguring logical units (LUs)
+.LP
+By default \fBstmf-ha\fR STMF logical units from all of the ZFS volumes
+it finds on the pool. If you want to limit this, you can manually list all
+volumes for which you want \fBstmf-ha\fR to create STMF LUs.
+.sp
+.in +2
+.nf
+\fBlogical_units=(\fR
+  tank/vm/VM_A_lun:00
+  tank/vm/VM_B_lun:01
+\fB)\fR
+.fi
+.in -2
+.sp
+By default all created LUs get a default view which grants access to
+every initiator. See below on how to limit this. The naming nomenclature
+for volumes is somewhat special. You can use anything for the name, but
+to get predictable Logical Unit Numbers (LUNs) it is recommended that
+you add a ':\fIlunum\fR' at the end of the volume name. That way
+\fBstmf-ha\fR knows what LUNs you want for a particular LU. \fBDo not
+rename\fR your ZFS volumes after creating them - this will confuse
+\fBstmf-ha\fR and cause startup of the LU to fail.
+.LP
+\fBExample 5 \fRConfiguring host groups
+.LP
+If you decide to make use of views, you can group initiators into host
+groups to allow for flexible access control using. To define host
+groups, use the \fIhost_groups\fR array.
+.sp
+.in +2
+.nf
+\fB
+\fBhost_groups=(\fR host_group_A  host_group_B \fB)\fR
+\fBhost_group_A_members=(\fR
+  iqn.1998-01.com.vmware:myvmhost1-01234567
+  iqn.1998-01.com.vmware:myvmhost2-89abcdef
+\fB)\fR
+\fBhost_group_B_members=(\fR
+  iqn.1998-01.com.vmware:foo-01234567
+  iqn.1998-01.com.vmware:bar-89abcdef
+\fB)\fR
+.fi
+.in -2
+.sp
+.LP
+\fBExample 6 \fRConfiguring target groups
+.LP
+If you decide to make use of views, you can group targets into target
+groups to allow for flexible access control. To define target groups,
+use the \fItarget_groups\fR array. The members in a target group are
+symbolic target names (as listed in the \fItargets\fR array), not target
+IQNs or other low-level protocol-specific identifiers -- \fBstmf-ha\fR
+automatically substitutes the low-level name when registering the target
+group with STMF.
+.sp
+.in +2
+.nf
+\fB
+\fBtarget_groups=(\fR both_targets  only_tgt02 \fB)\fR
+\fBboth_targets_members=(\fR target01  target02 \fB)\fR
+\fBonly_tgt02_members=(\fR target02 \fB)\fR
+.fi
+.in -2
+.sp
+.LP
+\fBExample 7 \fRConfiguring views
+.LP
+Views are configuration primitives that allow you to tie a host group
+and/or target group to a particular LU to restrict who may access that
+particular LU over a given target. At the moment \fBstmf-ha\fR is
+limited to a single view per LU for simplicity.
+.sp
+.in +2
+.nf
+\fB
+\fBviews=(\fR VMview \fB)\fR
+\fBVMview_hg=\fRhost_group_A     # if undefined any initiator has access
+\fBVMview_tg=\fRboth_targets     # if undefined LU visible on all targets
+\fBVMview_lu_prefix=\fR"tank/vm" # if undefined applies to all listed LUs
+.fi
+.in -2
+.sp
+The \fIlu_prefix\fR subvariable allows you to select which LUs a
+particular view will be applied to. If left undefined, the view is
+applied to all LUs in the pool (if these are manually enumerated in
+\fIlogical_units\fR, then only to those LUs). Otherwise, the LUs are
+matched by ZFS dataset prefix. Any LU which resides below the given
+prefix dataset will be matched (partial dataset name matches are not
+allowed), to any depth.
+.sp
+.SH EXIT STATUS
+.sp
+.LP
+The command returns with a zero status on success, or non-zero on error.
+
+.SH AUTHOR
+.sp
+.LP
+Written by Sašo Kiselkov.
+
+.SH COPYRIGHT
+.sp
+.LP
+Copyright 2013 by Sašo Kiselkov. License Common Development and
+Distribution License. You can obtain a copy of the license at
+\fIhttp://opensource.org/licenses/CDDL-1.0\fR.
+
+.SH SEE ALSO
+.sp
+.LP
+\fBstmfadm\fR(1M), \fBitadm\fR(1M), \fBsbdadm\fR(1M), \fBzpool\fR(1M),
+\fBzfs\fR(1M)
+.sp
