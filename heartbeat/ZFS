@@ -61,7 +61,7 @@ END
 }
 
 zpool_is_imported () {
-    zpool list -H | grep "^$OCF_RESKEY_pool\>" > /dev/nul
+    zpool list -H "$OCF_RESKEY_pool" > /dev/nul
 }
 
 # Forcibly imports a ZFS pool, mounting all of its auto-mounted filesystems
@@ -124,7 +124,7 @@ zpool_monitor () {
     fi
 
     # Check the pool status
-    HEALTH=`zpool list -H | grep "^$OCF_RESKEY_pool\\>" | awk '{print $8}'`
+    HEALTH=`zpool list -H -o health "$OCF_RESKEY_pool"`
     case "$HEALTH" in
         ONLINE|DEGRADED) return $OCF_SUCCESS;;
         FAULTED)         return $OCF_NOT_RUNNING;;
