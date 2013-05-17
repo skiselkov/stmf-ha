@@ -455,7 +455,7 @@ function config_view_on_lu () {
 	fi
 
 	debug_log_cmd "$STMFADM" add-view $view_hg $view_tg $lun \
-	    -l "$lu_guid"
+	    "$lu_guid"
 	"$STMFADM" add-view $view_hg $view_tg $lun "$lu_guid"
 }
 
