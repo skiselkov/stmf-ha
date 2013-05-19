@@ -48,7 +48,8 @@ function set_stmf_non_persistent () {
 		debug_log "Switching STMF into non-persistent mode"
 		debug_log_cmd "$SVCCFG" -s stmf setprop \
 		    stmf_data/persist_method = astring: none
-		"$SVCCFG" -s stmf setprop stmf_data/persist_method = astring: none
+		"$SVCCFG" -s stmf setprop stmf_data/persist_method = astring: \
+		    none
 	fi
 }
 
@@ -114,8 +115,8 @@ function tg_exists () {
 	"$STMFADM" list-tg "$1" &> /dev/null
 }
 
-# Translates a symbolic (stmf-ha.conf) target name into an iSCSI-specific IQN and
-# echos it.
+# Translates a symbolic (stmf-ha.conf) target name into an iSCSI-specific IQN
+# and echos it.
 #
 # Arguments:
 #	$1: the target symbolic target name to translate.
@@ -131,10 +132,11 @@ function iscsi_tgt_iqn () {
 function lu_make_guid () {
 	local guid=$(echo -n "$1" | $MD5SUM)
 
-	# '6' below means that this is an NAA IEEE Registered Extended Identifier.
+	# '6' below means that this is an NAA IEEE Registered Extended
+	# Identifier.
 	# '00144F' is the OUI of Sun Microsystems.
-	# The remaining digits are the first 25 hex digits of an MD5 sum of the
-	# ZFS volume name.
+	# The remaining digits are the first 25 hex digits of an MD5 sum of
+	# the ZFS volume name.
 	guid="600144F${guid:0:25}"
 	echo "$guid"
 }
@@ -370,7 +372,7 @@ function config_iscsi_tpg () {
 				IFS=":" read -a portal_components <<< "$portal"
 				local portal_ip=${portal_components[0]}
 
-				if [[ "${!tpg_portals_ptr}" != *${portal_ip}* ]];
+				if [[ "${!tpg_portals_ptr}" != *${portal_ip}* ]]
 				then
 					changed=1
 					break
