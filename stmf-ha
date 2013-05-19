@@ -37,6 +37,10 @@ POOL="$2"
 
 ALTERED_TPGS=( )
 
+# Switches the local STMF configuration into non-persistent mode so that
+# changes made using the stmfadm, itadm and sbadm tools aren't preserved
+# across host reboots. This is necessary, since all STMF configuration is
+# done through stmf-ha by the cluster resource manager.
 function set_stmf_non_persistent () {
 	local persist_method=$(svccfg -s stmf listprop stmf_data/persist_method\
 	                       | awk '{print $3}')
@@ -48,53 +52,107 @@ function set_stmf_non_persistent () {
 	fi
 }
 
+# Logs a message to stdout if the DEBUG envvar is set to 1.
+# This is used for generic debug message logging.
+#
+# Arguments:
+#	$@: the message parts to log.
 function debug_log () {
 	if [[ "$DEBUG" == 1 ]]; then
 		echo "DEBUG: $@"
 	fi
 }
 
+# Logs a message to stdout if the DEBUGCMD envvar is set to 1
+# This is used for debug logging the configuration commands we execute.
+#
+# Arguments:
+#	$@: the message parts to log.
 function debug_log_cmd () {
 	if [[ "$DEBUGCMD" == 1 ]]; then
 		echo "COMMAND: $@"
 	fi
 }
 
+# Checks whether a SCSI target exists.
+#
+# Arguments:
+#	$1: the STMF target name (type-specific) to check.
 function target_exists () {
 	"$STMFADM" list-target "$1" &> /dev/null
 }
 
+# Checks whether an iSCSI target portal group exists.
+#
+# Arguments:
+#	$1: the target name of the TPG to check.
 function tpg_exists () {
 	"$ITADM" list-tpg "$1" &> /dev/null
 }
 
+# Checks whether an LU exists.
+#
+# Arguments:
+#	$1: the LU GUID to check.
 function lu_exists () {
 	"$STMFADM" list-lu "$1" &> /dev/null
 }
 
+# Checks whether a host group exists.
+#
+# Arguments:
+#	$1: the host group name to check.
 function hg_exists () {
 	"$STMFADM" list-hg "$1" &> /dev/null
 }
 
+# Checks whether a target group exists.
+#
+# Arguments:
+#	$1: the target group name to check.
 function tg_exists () {
 	"$STMFADM" list-tg "$1" &> /dev/null
 }
 
+# Translates a symbolic (stmf-ha.conf) target name into an iSCSI-specific IQN and
+# echos it.
+#
+# Arguments:
+#	$1: the target symbolic target name to translate.
 function iscsi_tgt_iqn () {
 	echo "iqn.2010-08.org.illumos:stmf-ha:$1"
 }
 
+# Translates a ZFS volume name used into a valid LU GUID.
+# echos it.
+#
+# Arguments:
+#	$1: the name of the ZFS volume which backs this LU.
 function lu_make_guid () {
 	local guid=$(echo -n "$1" | $MD5SUM)
+
+	# '6' below means that this is an NAA IEEE Registered Extended Identifier.
+	# '00144F' is the OUI of Sun Microsystems.
+	# The remaining digits are the first 25 hex digits of an MD5 sum of the
+	# ZFS volume name.
 	guid="600144F${guid:0:25}"
 	echo "$guid"
 }
 
+# Checks whether a target is online.
+#
+# Arguments:
+#	$1: the STMF target name (type-specific) to check.
 function target_is_online () {
 	"$STMFADM" list-target -v "$1" | fgrep \
 	    'Operational Status: Online' > /dev/null
 }
 
+# Sets up the default parameters used by STMF-HA. These are specifically:
+# - default_target_type: currently defaults to 'iscsi'
+# - default_tpg: currently 'default'
+# If the user overrides any of these in the configuration file, we don't
+# reset them here to let the user's setting stick.
 function setup_defaults () {
 	if [[ "$default_target_type" == "" ]]; then
 		default_target_type=iscsi
@@ -104,12 +162,23 @@ function setup_defaults () {
 	fi
 }
 
+# Sets up the STMF-HA runtime environment. This currently only makes sure
+# there is an empty directory at "$RUNTIME_DIR" - that's where we will be
+# dumping our cached STMF-HA configurations. This is used when stopping
+# STMF-HA on a pool, to make sure that we don't need to touch the pool when
+# shutting down resources (which may be necessary because the pool is
+# FAULTED)
 function setup_runtime () {
 	if ! [ -d "$RUNTIME_DIR" ]; then
 		mkdir -p "$RUNTIME_DIR"
 	fi
 }
 
+# Determines and returns the target portal group to use for a particular iSCSI
+# target.
+#
+# Arguments:
+#	$1: symbolic (stmf-ha.conf) target name.
 function iscsi_tpg_for_target () {
 	local target="$1"
 
@@ -134,6 +203,12 @@ function iscsi_tpg_for_target () {
 	fi
 }
 
+# Creates a new iSCSI target. This also associates the target with its TPG
+# as determined by iscsi_tpg_for_target.
+#
+# Arguments:
+#	$1: the STMF iSCSI target name (IQN formatted)
+#	$target global: the symbolic (stmf-ha.conf) target name
 function create_iscsi_target () {
 	tgt_iqn="$1"
 	debug_log "      Creating new iSCSI target"
@@ -143,6 +218,14 @@ function create_iscsi_target () {
 	"$ITADM" create-target -t "$tpg" -n "$tgt_iqn" > /dev/null
 }
 
+# Modifies an existing iSCSI target. This determines what TPG the target should
+# be in and modifies it only if the user changed the target's TPG, or when the
+# TPG itself has been modified (which unbinds the targets from it, so it they to
+# be reassigned this TPG).
+#
+# Arguments:
+#	$1: the STMF iSCSI target name (IQN formatted)
+#	$target global: the symbolic (stmf-ha.conf) target name
 function modify_iscsi_target () {
 	tgt_iqn="$1"
 	debug_log "      Modifying existing iSCSI target"
@@ -159,6 +242,11 @@ function modify_iscsi_target () {
 	fi
 }
 
+# Configures an iSCSI target. If the target doesn't exist, it is created,
+# otherwise it is updated/modified.
+#
+# Arguments:
+#	$target global: the symbolic (stmf-ha.conf) target name
 function config_iscsi_target () {
 	local target="$1"
 	local tgt_iqn=$(iscsi_tgt_iqn "$target")
@@ -171,6 +259,11 @@ function config_iscsi_target () {
 	fi
 }
 
+# Determines what type a given target is. This consults the target's '_type'
+# subvariable and if it doesn't exist, uses the default target type.
+#
+# Arguments:
+#	$1: the symbolic (stmf-ha.conf) target name
 function get_target_type () {
 	local tgt_name="$1"
 
@@ -181,6 +274,9 @@ function get_target_type () {
 	echo ${!tgt_type}
 }
 
+# Returns the type-specific STMF ID (e.g. the IQN for iSCSI targets) based on
+# the symbolic (stmf-ha.conf) target name.
+#	$1: the symbolic (stmf-ha.conf) target name
 function get_target_stmf_id () {
 	local tgt_name="$1"
 	local tgt_type=$(get_target_type "$tgt_name")
@@ -190,6 +286,11 @@ function get_target_stmf_id () {
 	esac
 }
 
+# Configures a target. Based on the target type, this invokes the type-specific
+# configuration functions.
+#
+# Arguments:
+#	$target global: the symbolic (stmf-ha.conf) target name
 function config_target () {
 	debug_log "  Configuring target $target on pool $POOL"
 
@@ -200,6 +301,10 @@ $POOL" >&2;;
 	esac
 }
 
+# Deletes an iSCSI target that we had previously configured.
+#
+# Arguments:
+#	$1: the symbolic (stmf-ha.conf) target name
 function delete_iscsi_target () {
 	local target="$1"
 	local tgt_iqn=$(iscsi_tgt_iqn "$target")
@@ -212,6 +317,9 @@ function delete_iscsi_target () {
 	fi
 }
 
+# Deletes an STMF target that we had previously configured. This invokes the
+# type-specific target delete function.
+#	$target global: the symbolic (stmf-ha.conf) target name
 function delete_target () {
 	debug_log "  Deleting target $target on pool $POOL"
 
@@ -222,6 +330,11 @@ $POOL" >&2;;
 	esac
 }
 
+# Configures an iSCSI target portal group. This consults the stmf-ha.conf
+# configuration for the TPG and sets it up accordingly.
+#
+# Arguments:
+#	$1: the target portal group name
 function config_iscsi_tpg () {
 	local tpg_name="$1"
 	local tpg_portals="${tpg_name}_portals"
@@ -284,6 +397,10 @@ function config_iscsi_tpg () {
 	fi
 }
 
+# Deletes an iSCSI target portal group we had previous configured.
+#
+# Arguments:
+#	$1: the target portal group name
 function delete_iscsi_tpg () {
 	local tpg_name="$1"
 	debug_log "  Deleting iSCSI target portal group $tpg_name"
@@ -294,24 +411,32 @@ function delete_iscsi_tpg () {
 	fi
 }
 
+# Configures an LU for a ZFS volume. This function first attempts to import the
+# LU from the ZFS volume, in case it had been exported before. If it doesn't
+# exist, the LU is re-created.
+#
+# Arguments:
+#	$1: ZFS volume name holding the LU
 function config_lu () {
 	local lu="$1"
 	local lu_guid=$(lu_make_guid "$lu")
 	debug_log "  Configuring LU $lu_guid"
 
 	if ! lu_exists "$lu_guid" ; then
-		debug_log_cmd "$STMFADM" import-lu "/dev/zvol/rdsk/$lu"
-		if ! "$STMFADM" import-lu "/dev/zvol/rdsk/$lu" &> /dev/null;
-		then
-			# New LU, create it
-			debug_log_cmd "$STMFADM" create-lu -p "guid=$lu_guid" \
-			    "/dev/zvol/rdsk/$lu"
-			"$STMFADM" create-lu -p guid="$lu_guid" \
-			    "/dev/zvol/rdsk/$lu" > /dev/null
-		fi
+		# Don't bother with import-lu, re-creating the LU is equivalent
+		# and allows for renaming of LUs (the GUID is modified because
+		# stmf-ha derives it from the ZFS volume name)
+		debug_log_cmd "$STMFADM" create-lu -p "guid=$lu_guid" \
+		    "/dev/zvol/rdsk/$lu"
+		"$STMFADM" create-lu -p guid="$lu_guid" \
+		    "/dev/zvol/rdsk/$lu" > /dev/null
 	fi
 }
 
+# Deletes an LU we had previously configured.
+#
+# Arguments:
+#	$1: ZFS volume name holding the LU
 function delete_lu () {
 	local lu="$1"
 	local lu_guid=$(lu_make_guid "$lu")
@@ -323,10 +448,16 @@ function delete_lu () {
 	fi
 }
 
+# Configures a host group. If the group doesn't exist, it is created first.
+# This function also makes sure it contains all the members it should.
+#
+# Arguments:
+#	$1: host group name from stmf-ha.conf
 function config_host_group () {
 	local hg="$1"
 	debug_log "  Configuring host group $hg"
 
+	# Create the group if it doesn't exist
 	if ! hg_exists "$hg"; then
 		debug_log_cmd "$STMFADM" create-hg "$hg"
 		if ! "$STMFADM" create-hg "$hg"; then
@@ -357,6 +488,10 @@ function config_host_group () {
 	done
 }
 
+# Deletes a host group we had previously configured.
+#
+# Arguments:
+#	$1: host group name from stmf-ha.conf
 function delete_host_group () {
 	local hg="$1"
 	debug_log "  Deleting host group $hg"
@@ -367,10 +502,16 @@ function delete_host_group () {
 	fi
 }
 
+# Configures a target group. If the group doesn't exist, it is created first.
+# This function also makes sure it contains all the members it should.
+#
+# Arguments:
+#	$1: target group name from stmf-ha.conf
 function config_target_group () {
 	local tg="$1"
 	debug_log "  Configuring target group $tg"
 
+	# Create the group if it doesn't exist
 	if ! tg_exists "$tg"; then
 		debug_log_cmd "$STMFADM" create-tg "$tg"
 		if ! "$STMFADM" create-tg "$tg"; then
@@ -382,7 +523,8 @@ function config_target_group () {
 	existing_members=( $("$STMFADM" list-tg -v "$tg" | \
 	    awk '/Member:/{print $2}' | tr '\n' ' ') )
 
-	# First reformat the target names into the underlying STMF format
+	# First reformat the symbolic target names into the underlying
+	# type-specific STMF format (e.g. IQNs for iSCSI targets)
 	for member in ${!tg_members}; do
 		stmf_tg_members[${#stmf_tg_members[@]}]=$(get_target_stmf_id \
 		    "$member")
@@ -396,6 +538,8 @@ function config_target_group () {
 			if target_is_online "$member"; then
 				debug_log_cmd "$STMFADM" offline-target \
 				    "$member"
+				# This should block until the target is really
+				# offline
 				"$STMFADM" offline-target "$member"
 				do_online=1
 			fi
@@ -404,6 +548,7 @@ function config_target_group () {
 			    "$member"
 			"$STMFADM" add-tg-member -g "$tg" "$member"
 
+			# If we had offlined the target, online it again
 			if [[ $do_online == 1 ]]; then
 				debug_log_cmd "$STMFADM" online-target \
 				    "$member"
@@ -436,6 +581,10 @@ function config_target_group () {
 	done
 }
 
+# Deletes a target group we had previously configured.
+#
+# Arguments:
+#	$1: target group name from stmf-ha.conf
 function delete_target_group () {
 	local tg="$1"
 	debug_log "  Deleting target group $tg"
@@ -446,6 +595,16 @@ function delete_target_group () {
 	fi
 }
 
+# Configures a view on an LU. This determines what host/target group the view
+# should represent and assigns it to the view entry #0. Please note that at
+# the moment we only support 1 view per LU. LU numbers (LUNs) are assigned based
+# on the name of the ZFS volume - if the name contains a ':' character, the LUN
+# is the taken to be the value after the last ':' character. If it doesn't, we
+# let COMSTAR pick a LUN for us automatically (probably not what you want).
+#
+# Arguments:
+#	$1: view name to assign (from stmf-ha.conf)
+#	$2: symbolic LU name (ZFS volume name)
 function config_view_on_lu () {
 	local view="$1"
 	local lu_name="$2"
@@ -481,6 +640,16 @@ function config_view_on_lu () {
 	"$STMFADM" add-view $view_hg $view_tg $lun "$lu_guid"
 }
 
+# Configures a given view on all LUs it applies to. This iterates over the ZFS
+# volumes on the pool, applying the view to each volume to which the view's
+# "_lu_prefix" applies (if no prefix is specified, the view is applied to all
+# volumes on the pool). The list of volumes to apply the view onto is also
+# filtered based on the "logical_units" stmf-ha.conf array - if it is defined,
+# the view is only applied to the LUs in that array AND which also match its
+# "_lu_prefix" subvariable.
+#
+# Arguments:
+#	$1: view name to configure (from stmf-ha.conf)
 function config_view () {
 	local view="$1"
 	local lu_prefix_ptr="${view}_lu_prefix"
@@ -505,6 +674,9 @@ function config_view () {
 	done
 }
 
+# Adds a default "all-access" view onto all configured LUs (either from the
+# logical_units array or onto all ZFS volumes on the pool). This is called only
+# when there are no views configured in stmf-ha.conf.
 function config_add_default_views () {
 	if [[ "${#logical_units[@]}" == 0 ]]; then
 		"$ZFS" list -rH -t volume "$POOL" | while read lu rest; do
@@ -520,7 +692,13 @@ function config_add_default_views () {
 	fi
 }
 
+# Starts and configures STMF-HA on a ZFS pool. This function can also be called
+# when updating the STMF-HA configuration.
+#
+# Arguments:
+#	$POOL global: the pool name to configure.
 function config_stmf_ha_pool () {
+	# Is STMF-HA even configured on this pool?
 	if ! [ -f "/$POOL/stmf-ha.conf" ]; then
 		return
 	fi
@@ -590,6 +768,12 @@ function config_stmf_ha_pool () {
 	fi
 }
 
+# Stops and unconfigures STMF-HA on a pool. This doesn't actually open the
+# stored pool configuration, but instead uses a cached copy from our
+# $RUNTIME_DIR to make sure FAULTED pools don't block STMF teardown.
+#
+# Arguments:
+#	$POOL global: the pool name to configure.
 function stop_stmf_ha_pool () {
 	if ! [ -f "$RUNTIME_DIR/$POOL-cached-stmf-ha.conf" ]; then
 		return
@@ -612,6 +796,8 @@ function stop_stmf_ha_pool () {
 			fi
 			delete_lu "$lu"
 		done < "$RUNTIME_DIR/$POOL-cached-lu.list"
+
+		# Remove the cached LU list, it's not needed anymore
 		rm "$RUNTIME_DIR/$POOL-cached-lu.list"
 	else
 		for lu in $logical_units; do
@@ -645,6 +831,7 @@ function stop_stmf_ha_pool () {
 	rm "$RUNTIME_DIR/$POOL-cached-stmf-ha.conf"
 }
 
+# Invokes the 'start' STMF-HA command on all pools with an stmf-ha.conf file.
 function stmf_ha_start_all () {
 	echo -n "Updating STMF-HA on all pools ..."
 	"$ZPOOL" list -H | while read pool rest; do
@@ -655,6 +842,7 @@ function stmf_ha_start_all () {
 	echo "done"
 }
 
+# Prints our helpful help message.
 function print_help () {
 	cat <<EOF
 Usage:
@@ -693,20 +881,24 @@ $0 verify <poolname>
 $0 -V
 
 	Prints version and license information.
-	For more information see the stmf-ha(1M) manpage.
+
+For more information see the stmf-ha(1M) manpage.
 EOF
 }
 
+# Prints version and license info.
 function print_version () {
 	cat <<EOF
 This is the SCSI Target Mode Framework High-Availability suite (STMF-HA)
 Version: $STMF_HA_VERSION
 Written by Sašo Kiselkov <skiselkov@gmail.com>
-This software is in the public domain.
+Use of this software is subject to the terms of the Common Development
+  and Distribution License.
 For usage info type "$0 -h"
 EOF
 }
 
+# Checks whether the user passed a 'poolname' argument.
 function check_got_pool () {
 	if [[ "$POOL" == "" ]]; then
 		echo "Missing argument. Try \"$0 -h\" for help." >&2
@@ -717,21 +909,26 @@ function check_got_pool () {
 setup_defaults
 setup_runtime
 
-if [[ "$COMMAND" == "-h" ]]; then
+case "$COMMAND" in
+-h)
 	print_help
-elif [[ "$COMMAND" == "-V" ]]; then
+	;;
+-V)
 	print_version
-elif [[ "$COMMAND" == "start" ]]; then
+	;;
+start)
 	if [[ "$POOL" == "all" ]]; then
 		stmf_ha_start_all
 		exit 0
 	fi
 	check_got_pool
 	config_stmf_ha_pool "$POOL"
-elif [[ "$COMMAND" == "stop" ]]; then
+	;;
+stop)
 	check_got_pool
 	stop_stmf_ha_pool "$POOL"
-elif [[ "$COMMAND" == "verify" ]]; then
+	;;
+verify)
 	check_got_pool
 	source "/$POOL/stmf-ha.conf"
 	if [[ $? != 0 ]]; then
@@ -739,7 +936,9 @@ elif [[ "$COMMAND" == "verify" ]]; then
 	else
 		echo "Configuration file appears to be OK"
 	fi
-else
+	;;
+*)
 	echo "Unknown command \"$COMMAND\". Try \"$0 -h\" for help" >&2
 	exit 1
-fi
+	;;
+esac
