@@ -1,3 +1,4 @@
+=======
 STMF-HA
 =======
 
@@ -12,3 +13,9 @@ makes it possible to easily implement high-available clusters which
 share a single ZFS pool between themselves.
 
 For more information see manpages/stmf-ha.1m in this repository.
+
+License
+-------
+
+Common Development and Distribution License. You can obtain a copy of
+the license at http://opensource.org/licenses/CDDL-1.0.
