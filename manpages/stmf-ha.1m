@@ -32,8 +32,17 @@ Framework (STMF) High-Availaibility mechanisms. STMF is another name for
 the Common SCSI Target-Mode Framework (COMSTAR) in Illumos. In essence
 what STMF-HA does is provide a method to store and restore COMSTAR
 configuration pertaining to a particular pool on the pool itself. This
-makes it possible to easily implement high-available clusters which
-share a single \fBZFS\fR pool between themselves.
+makes it possible to easily implement highly-available clusters which
+share \fBZFS\fR pools among several nodes.
+.sp
+Please note that \fBstmf-ha\fR \fIdoes not\fR provide the functionality
+of a cluster resource manager. It only provides a resource agent which
+would be invoked by a cluster resource manager to start, stop and
+migrate \fBSTMF\fR and \fBZFS\fR resources between cluster nodes.
+Provided as part of the \fBstmf-ha\fR package is an \fBOCF\fR resource
+agent script that integrates with cluster resource managers with support
+for \fBOCF\fR. For more information, see
+\fIhttp://linux-ha.org/wiki/OCF_Resource_Agents\fR.
 .sp
 .SS "STMF-HA Configuration"
 .sp
