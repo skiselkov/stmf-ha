@@ -35,6 +35,9 @@ STMF_HA_VERSION="0.1.1"
 COMMAND="$1"
 POOL="$2"
 
+LU_GUID_PROP="org.illumos.stmf-ha:guid"
+LU_NUM_PROP="org.illumos.stmf-ha:lun"
+
 ALTERED_TPGS=( )
 
 # Switches the local STMF configuration into non-persistent mode so that
@@ -71,8 +74,18 @@ function debug_log () {
 #	$@: the message parts to log.
 function debug_log_cmd () {
 	if [[ "$DEBUGCMD" == 1 ]]; then
-		echo "COMMAND: $@"
+		echo "COMMAND: $@" >&2
 	fi
+}
+
+# Executes a shell command with optional logging and dummy mode. This function
+# should only be used with commands that alter running state
+function do_cmd () {
+	debug_log_cmd $@
+	if [[ "$DUMMYMODE" != "" ]]; then
+		return
+	fi
+	$@
 }
 
 # Checks whether a SCSI target exists.
@@ -130,14 +143,19 @@ function iscsi_tgt_iqn () {
 # Arguments:
 #	$1: the name of the ZFS volume which backs this LU.
 function lu_make_guid () {
-	local guid=$(echo -n "$1" | $MD5SUM)
+	# First we try to read the old guid on the ZFS volume
+	local guid=$(zfs get -H -o value "$LU_GUID_PROP" "$1")
+	if [[ $? != 0 ]] || [[ "$guid" == "-" ]]; then
+		# If that didn't work, we will generate a new one
+		guid=$(echo -n "$1" | $MD5SUM)
 
-	# '6' below means that this is an NAA IEEE Registered Extended
-	# Identifier.
-	# '00144F' is the OUI of Sun Microsystems.
-	# The remaining digits are the first 25 hex digits of an MD5 sum of
-	# the ZFS volume name.
-	guid="600144F${guid:0:25}"
+		# '6' below means that this is an NAA IEEE Registered Extended
+		# Identifier.
+		# '00144F' is the OUI of Sun Microsystems.
+		# The remaining digits are the first 25 hex digits of an MD5
+		# sum of the ZFS volume name.
+		guid="600144F${guid:0:25}"
+	fi
 	echo "$guid"
 }
 
@@ -216,8 +234,7 @@ function create_iscsi_target () {
 	debug_log "      Creating new iSCSI target"
 
 	tpg=$(iscsi_tpg_for_target "$target")
-	debug_log_cmd "$ITADM" create-target -t "$tpg" -n "$tgt_iqn"
-	"$ITADM" create-target -t "$tpg" -n "$tgt_iqn" > /dev/null
+	do_cmd "$ITADM" create-target -t "$tpg" -n "$tgt_iqn" > /dev/null
 }
 
 # Modifies an existing iSCSI target. This determines what TPG the target should
@@ -239,8 +256,7 @@ function modify_iscsi_target () {
 	if [[ $("$ITADM" list-target -v "$tgt_iqn" | awk \
 	      '/tpg-tags:/{print $2}') != "$tpg" ]] || \
 	   [[ "${ALTERED_TPGS[@]}" == *${tpg}* ]] ; then
-		debug_log_cmd "$ITADM" modify-target -t "$tpg" "$tgt_iqn"
-		"$ITADM" modify-target -t "$tpg" "$tgt_iqn" > /dev/null
+		do_cmd "$ITADM" modify-target -t "$tpg" "$tgt_iqn"
 	fi
 }
 
@@ -314,8 +330,7 @@ function delete_iscsi_target () {
 	debug_log "    Deleting iSCSI target $tgt_iqn"
 
 	if target_exists "$tgt_iqn"; then
-		debug_log_cmd "$ITADM" delete-target -f "$tgt_iqn"
-		"$ITADM" delete-target -f "$tgt_iqn"
+		do_cmd "$ITADM" delete-target -f "$tgt_iqn"
 	fi
 }
 
@@ -382,20 +397,16 @@ function config_iscsi_tpg () {
 
 		# TPG has changed, re-create it
 		if [[ $changed == 1 ]]; then
-			debug_log_cmd "$ITADM" delete-tpg -f "$tpg_name"
-			"$ITADM" delete-tpg -f "$tpg_name"
-			debug_log_cmd "$ITADM" create-tpg "$tpg_name" \
+			do_cmd "$ITADM" delete-tpg -f "$tpg_name"
+			do_cmd "$ITADM" create-tpg "$tpg_name" \
 			    ${!tpg_portals_ptr}
-			"$ITADM" create-tpg "$tpg_name" ${!tpg_portals_ptr}
 
 			# Make a note that we need to update targets using
 			# this tpg
 			ALTERED_TPGS[${#ALTERED_TPGS[@]}]="$tpg_name"
 		fi
 	else
-		debug_log_cmd "$ITADM" create-tpg "$tpg_name" \
-		    ${!tpg_portals_ptr}
-		"$ITADM" create-tpg "$tpg_name" ${!tpg_portals_ptr}
+		do_cmd "$ITADM" create-tpg "$tpg_name" ${!tpg_portals_ptr}
 	fi
 }
 
@@ -408,8 +419,7 @@ function delete_iscsi_tpg () {
 	debug_log "  Deleting iSCSI target portal group $tpg_name"
 
 	if tpg_exists "$tpg_name"; then
-		debug_log_cmd "$ITADM" delete-tpg -f "$tpg"
-		"$ITADM" delete-tpg -f "$tpg"
+		do_cmd "$ITADM" delete-tpg -f "$tpg"
 	fi
 }
 
@@ -426,12 +436,11 @@ function config_lu () {
 
 	if ! lu_exists "$lu_guid" ; then
 		# Don't bother with import-lu, re-creating the LU is equivalent
-		# and allows for renaming of LUs (the GUID is modified because
-		# stmf-ha derives it from the ZFS volume name)
-		debug_log_cmd "$STMFADM" create-lu -p "guid=$lu_guid" \
-		    "/dev/zvol/rdsk/$lu"
-		"$STMFADM" create-lu -p guid="$lu_guid" \
+		# (we stash the GUID in a separate user-property) to allow for
+		# LU renaming.
+		do_cmd "$STMFADM" create-lu -p guid="$lu_guid" \
 		    "/dev/zvol/rdsk/$lu" > /dev/null
+		do_cmd "$ZFS" set "$LU_GUID_PROP=$lu_guid" "$lu"
 	fi
 }
 
@@ -445,8 +454,7 @@ function delete_lu () {
 	debug_log "  Deleting LU $lu_guid"
 
 	if lu_exists "$lu_guid" ; then
-		debug_log_cmd "$STMFADM" delete-lu "$lu_guid"
-		"$STMFADM" delete-lu "$lu_guid"
+		do_cmd "$STMFADM" delete-lu "$lu_guid"
 	fi
 }
 
@@ -461,8 +469,7 @@ function config_host_group () {
 
 	# Create the group if it doesn't exist
 	if ! hg_exists "$hg"; then
-		debug_log_cmd "$STMFADM" create-hg "$hg"
-		if ! "$STMFADM" create-hg "$hg"; then
+		if ! do_cmd "$STMFADM" create-hg "$hg"; then
 			return
 		fi
 	fi
@@ -474,18 +481,14 @@ function config_host_group () {
 	# Add missing members
 	for member in ${!hg_members}; do
 		if [[ "${existing_members[@]}" != *${member}* ]]; then
-			debug_log_cmd "$STMFADM" add-hg-member -g "$hg" \
-			    ${member}
-			"$STMFADM" add-hg-member -g "$hg" "$member"
+			do_cmd "$STMFADM" add-hg-member -g "$hg" "$member"
 		fi
 	done
 
 	# Remove members which are no longer in the configuration file
 	for member in ${existing_members[@]}; do
 		if [[ "${!hg_members}" != *${member}* ]]; then
-			debug_log_cmd "$STMFADM" remove-hg-member -g "$hg" \
-			    "$member"
-			"$STMFADM" remove-hg-member -g "$hg" "$member"
+			do_cmd "$STMFADM" remove-hg-member -g "$hg" "$member"
 		fi
 	done
 }
@@ -499,8 +502,7 @@ function delete_host_group () {
 	debug_log "  Deleting host group $hg"
 
 	if hg_exists "$hg"; then
-		debug_log_cmd "$STMFADM" delete-hg "$hg"
-		"$STMFADM" delete-hg "$hg"
+		do_cmd "$STMFADM" delete-hg "$hg"
 	fi
 }
 
@@ -515,8 +517,7 @@ function config_target_group () {
 
 	# Create the group if it doesn't exist
 	if ! tg_exists "$tg"; then
-		debug_log_cmd "$STMFADM" create-tg "$tg"
-		if ! "$STMFADM" create-tg "$tg"; then
+		if ! do_cmd "$STMFADM" create-tg "$tg"; then
 			return
 		fi
 	fi
@@ -538,23 +539,17 @@ function config_target_group () {
 		if [[ "${existing_members[@]}" != *${member}* ]]; then
 			local do_online=0
 			if target_is_online "$member"; then
-				debug_log_cmd "$STMFADM" offline-target \
-				    "$member"
 				# This should block until the target is really
 				# offline
-				"$STMFADM" offline-target "$member"
+				do_cmd "$STMFADM" offline-target "$member"
 				do_online=1
 			fi
 
-			debug_log_cmd "$STMFADM" add-tg-member -g "$tg" \
-			    "$member"
-			"$STMFADM" add-tg-member -g "$tg" "$member"
+			do_cmd "$STMFADM" add-tg-member -g "$tg" "$member"
 
 			# If we had offlined the target, online it again
 			if [[ $do_online == 1 ]]; then
-				debug_log_cmd "$STMFADM" online-target \
-				    "$member"
-				"$STMFADM" online-target "$member"
+				do_cmd "$STMFADM" online-target "$member"
 			fi
 		fi
 	done
@@ -564,20 +559,14 @@ function config_target_group () {
 		if [[ "${stmf_tg_members[@]}" != *${member}* ]]; then
 			local do_online=0
 			if target_is_online "$member"; then
-				debug_log_cmd "$STMFADM" offline-target \
-				    "$member"
-				"$STMFADM" offline-target "$member"
+				do_cmd "$STMFADM" offline-target "$member"
 				do_online=1
 			fi
 
-			debug_log_cmd "$STMFADM" remove-tg-member -g "$tg" \
-			    "$member"
-			"$STMFADM" remove-tg-member -g "$tg" "$member"
+			do_cmd "$STMFADM" remove-tg-member -g "$tg" "$member"
 
 			if [[ $do_online == 1 ]]; then
-				debug_log_cmd "$STMFADM" online-target \
-				    "$member"
-				"$STMFADM" online-target "$member"
+				do_cmd "$STMFADM" online-target "$member"
 			fi
 		fi
 	done
@@ -592,17 +581,21 @@ function delete_target_group () {
 	debug_log "  Deleting target group $tg"
 
 	if tg_exists "$tg"; then
-		debug_log_cmd "$STMFADM" delete-tg "$tg"
-		"$STMFADM" delete-tg "$tg"
+		do_cmd "$STMFADM" delete-tg "$tg"
 	fi
 }
 
 # Configures a view on an LU. This determines what host/target group the view
 # should represent and assigns it to the view entry #0. Please note that at
-# the moment we only support 1 view per LU. LU numbers (LUNs) are assigned based
-# on the name of the ZFS volume - if the name contains a ':' character, the LUN
-# is the taken to be the value after the last ':' character. If it doesn't, we
-# let COMSTAR pick a LUN for us automatically (probably not what you want).
+# the moment we only support 1 view per LU. LU numbers (LUNs) are assigned
+# based on one of two things:
+# - either the ZFS volume contains a $LU_NUM_PROP property, in which
+#   case the LUN is the value of that property, or
+# - the name of the ZFS volume contains a ':' character, in which case
+#   the LUN is the taken to be the value after the last ':' character.
+# If neither case is true, we simply let COMSTAR pick a LUN for us
+# automatically. The automatic choice of COMSTAR is then stored in the
+# $LU_NUM_PROP property, making the decision permanent.
 #
 # Arguments:
 #	$1: view name to assign (from stmf-ha.conf)
@@ -612,19 +605,24 @@ function config_view_on_lu () {
 	local lu_name="$2"
 	local lu_guid=$(lu_make_guid "$lu_name")
 
-	IFS=":" read -a lu_name_components <<< "$lu_name"
-	if [ ${#lu_name_components[@]} -ge 2 ]; then
-		# Only derive the LUN from the name if it indeed contains
-		# a ":" character. If not, $lun expands to nothing, letting
-		# COMSTAR auto-select the LUN
-		lun_offset=$(( ${#lu_name_components[@]} - 1 ))
-		local lun="-n ${lu_name_components[$lun_offset]}"
+	local lun=$(zfs get -H -o value "$LU_NUM_PROP" "$lu_name")
+	if [[ $? != 0 ]] || [[ "$lun" == "-" ]]; then
+		IFS=":" read -a lu_name_components <<< "$lu_name"
+		if [ ${#lu_name_components[@]} -ge 2 ]; then
+			# Only derive the LUN from the name if it indeed
+			# contains a ":" character. If not, $lun_arg expands
+			# to nothing, letting COMSTAR auto-select the LUN
+			lun_offset=$(( ${#lu_name_components[@]} - 1 ))
+			local lun_arg="-n ${lu_name_components[$lun_offset]}"
+		fi
+	else
+		local lun_arg="-n $lun"
 	fi
 
 	if "$STMFADM" list-view -l "$lu_guid" 0 &> /dev/null; then
-		# First remove an old view at index #0 (that's the one we use)
-		debug_log_cmd "$STMFADM" remove-view -l "$lu_guid" 0
-		"$STMFADM" remove-view -l "$lu_guid" 0
+		# First remove an old view at index #0 (that's the
+		# one we use)
+		do_cmd "$STMFADM" remove-view -l "$lu_guid" 0
 	fi
 
 	view_hg_ptr="${view}_hg"
@@ -637,9 +635,16 @@ function config_view_on_lu () {
 		view_tg="-t ${!view_tg_ptr}"
 	fi
 
-	debug_log_cmd "$STMFADM" add-view $view_hg $view_tg $lun \
-	    "$lu_guid"
-	"$STMFADM" add-view $view_hg $view_tg $lun "$lu_guid"
+	do_cmd "$STMFADM" add-view $view_hg $view_tg $lun_arg "$lu_guid"
+	if [[ $? != 0 ]]; then
+		# adding view failed - probably a LUN conflict, just retry
+		# with no explicit LUN, this should assign a new LUN
+		do_cmd "$STMFADM" add-view $view_hg $view_tg "$lu_guid"
+	fi
+
+	# read back the assigned LUN and store it in a persistent property
+	lun=$("$STMFADM" list-view -l "$lu_guid" 0 | awk '/LUN/{print $3}')
+	do_cmd "$ZFS" set "$LU_NUM_PROP=$lun" "$lu_name"
 }
 
 # Configures a given view on all LUs it applies to. This iterates over the ZFS
@@ -724,7 +729,7 @@ function config_stmf_ha_pool () {
 			if [[ "$lu" == "no" ]]; then
 				break
 			fi
-			config_lu "$lu"
+			config_lu "$lu" &
 		done
 		# Cache the LU list so that we don't have to talk to ZFS
 		# when unconfiguring STMF
@@ -732,9 +737,13 @@ function config_stmf_ha_pool () {
 		    "$RUNTIME_DIR/$POOL-cached-lu.list"
 	else
 		for lu in ${logical_units[@]}; do
-			config_lu "$lu"
+			config_lu "$lu" &
 		done
 	fi
+	# Wait for all LU configuration to finish
+	for job in `jobs -p`; do
+		wait $job
+	done
 
 	# Next iSCSI target portal groups (since those are needed by
 	# iSCSI targets)
@@ -791,21 +800,28 @@ function stop_stmf_ha_pool () {
 	# with the LUs
 
 	# Delete all our LUs
+	# This executes the delete operation in the background, since
+	# offlining an LU is a lengthy process and we want it to proceed as
+	# quickly as possible.
 	if [[ "${#logical_units[@]}" == 0 ]]; then
 		while read lu rest; do
 			if [[ "$lu" == "no" ]]; then
 				break
 			fi
-			delete_lu "$lu"
+			delete_lu "$lu" &
 		done < "$RUNTIME_DIR/$POOL-cached-lu.list"
 
 		# Remove the cached LU list, it's not needed anymore
 		rm "$RUNTIME_DIR/$POOL-cached-lu.list"
 	else
 		for lu in $logical_units; do
-			delete_lu "$lu"
+			delete_lu "$lu" &
 		done
 	fi
+	# Wait for all LU deletions to finish
+	for job in `jobs -p`; do
+		wait $job
+	done
 
 	# Delete target groups
 	for tg in ${target_groups[@]}; do
@@ -818,14 +834,21 @@ function stop_stmf_ha_pool () {
 	done
 
 	# Remove all our targets
+	# This executes the delete operation in the background, since
+	# offlining a target is a lengthy process and we want it to proceed as
+	# quickly as possible.
 	if [[ "$targets" == "" ]]; then
 		targets="$POOL"
 	fi
 	for target in $targets; do
-		delete_target "$target"
+		delete_target "$target" &
+	done
+	# Wait for all target deletions to finish
+	for job in `jobs -p`; do
+		wait $job
 	done
 
-	# Finally flush iSCSI target portal groups
+	# Finally flush out iSCSI target portal groups
 	for tpg in $target_portal_groups; do
 		delete_iscsi_tpg "$tpg"
 	done
