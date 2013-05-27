@@ -180,7 +180,19 @@ At the moment \fBstmf-ha\fR is limited to iSCSI targets. I do not have
 any FC or SRP hardware, and so cannot implement any other target types.
 .RE
 .RE
-
+.sp
+.SS LU numbers (LUNs)
+.sp
+By default \fBstmf-ha\fR tries to preserve LU numbers across
+reconfigurations. When a new LU is created (from a fresh \fIZFS\fR
+volume), \fBstmf-ha\fR lets STMF assign it an automatically generated
+LUN (which depends on what LUNs are already used on the target(s) where
+this LU should be made available). This is then stored in a
+org.illumos.stmf-ha:lun user property on the ZFS volume to make the
+decision persistent. Once a LUN has been auto-assigned, it is not
+changed between \fBstmf-ha\fR invocations. The only occassion that a LUN
+could be changed is when it conflicts with another LUN (make sure you
+configure your target groups correctly to avoid this).
 .SH EXAMPLES
 .LP
 \fBExample 1 \fRCreating a simple ZFS pool with volumes exported by STMF-HA
@@ -192,8 +204,8 @@ are then exported by \fBstmf-ha\fR over iSCSI.
 .nf
 # \fBzpool create tank mirror c0t0d0 c0t1d0\fR
 # \fBzfs create tank/vm\fR
-# \fBzfs create -s -V 20g tank/vm/VM_A_lun:00\fR
-# \fBzfs create -s -V 30g tank/vm/VM_B_lun:01\fR
+# \fBzfs create -s -V 20g tank/vm/VM_A\fR
+# \fBzfs create -s -V 30g tank/vm/VM_B\fR
 # \fBtouch /tank/stmf-ha.conf\fR	# create empty \fIstmf-ha.conf\fR
 # \fBstmf-ha start tank\fR		# create and start STMF target and LUs
 .fi
@@ -265,20 +277,13 @@ volumes for which you want \fBstmf-ha\fR to create STMF LUs.
 .in +2
 .nf
 \fBlogical_units=(\fR
-  tank/vm/VM_A_lun:00
-  tank/vm/VM_B_lun:01
+  tank/vm/VM_A
+  tank/vm/VM_B
 \fB)\fR
 .fi
 .in -2
-.sp
 By default all created LUs get a default view which grants access to
-every initiator. See below on how to limit this. The naming nomenclature
-for volumes is somewhat special. You can use anything for the name, but
-to get predictable Logical Unit Numbers (LUNs) it is recommended that
-you add a ':\fIlunum\fR' at the end of the volume name. That way
-\fBstmf-ha\fR knows what LUNs you want for a particular LU. \fBDo not
-rename\fR your ZFS volumes after creating them - this will confuse
-\fBstmf-ha\fR and cause startup of the LU to fail.
+every initiator. See below on how to limit this.
 .LP
 \fBExample 5 \fRConfiguring host groups
 .LP

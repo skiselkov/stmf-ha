@@ -40,6 +40,11 @@ LU_NUM_PROP="org.illumos.stmf-ha:lun"
 
 ALTERED_TPGS=( )
 
+# This holds the list of LUs which do not yet have a persistent
+# $STMF_LU_NUM property - we will determine their LUNs after processing
+# the LUs which we've established the LUNs for already.
+DEFERRED_LUS=( )
+
 # Switches the local STMF configuration into non-persistent mode so that
 # changes made using the stmfadm, itadm and sbadm tools aren't preserved
 # across host reboots. This is necessary, since all STMF configuration is
@@ -535,7 +540,6 @@ function config_target_group () {
 
 	# Add missing members
 	for member in ${stmf_tg_members[@]}; do
-
 		if [[ "${existing_members[@]}" != *${member}* ]]; then
 			local do_online=0
 			if target_is_online "$member"; then
@@ -588,18 +592,17 @@ function delete_target_group () {
 # Configures a view on an LU. This determines what host/target group the view
 # should represent and assigns it to the view entry #0. Please note that at
 # the moment we only support 1 view per LU. LU numbers (LUNs) are assigned
-# based on one of two things:
-# - either the ZFS volume contains a $LU_NUM_PROP property, in which
-#   case the LUN is the value of that property, or
-# - the name of the ZFS volume contains a ':' character, in which case
-#   the LUN is the taken to be the value after the last ':' character.
-# If neither case is true, we simply let COMSTAR pick a LUN for us
-# automatically. The automatic choice of COMSTAR is then stored in the
-# $LU_NUM_PROP property, making the decision permanent.
+# automatically by COMSTAR and the automatic choice of COMSTAR is then stored
+# in the $LU_NUM_PROP property, making the decision persistent.
 #
 # Arguments:
 #	$1: view name to assign (from stmf-ha.conf)
 #	$2: symbolic LU name (ZFS volume name)
+#	$3: a boolean "0" or "1" determining whether we will auto-assign
+#	    LUNs if the persistent state isn't already stored in the LU.
+#	    If set to "1", we will auto-assign a LUN and store the result.
+#	    If set to "0", we will add this LU's name to the global list of
+#	    $DEFERRED_LUS and return without performing anything.
 function config_view_on_lu () {
 	local view="$1"
 	local lu_name="$2"
@@ -607,13 +610,11 @@ function config_view_on_lu () {
 
 	local lun=$(zfs get -H -o value "$LU_NUM_PROP" "$lu_name")
 	if [[ $? != 0 ]] || [[ "$lun" == "-" ]]; then
-		IFS=":" read -a lu_name_components <<< "$lu_name"
-		if [ ${#lu_name_components[@]} -ge 2 ]; then
-			# Only derive the LUN from the name if it indeed
-			# contains a ":" character. If not, $lun_arg expands
-			# to nothing, letting COMSTAR auto-select the LUN
-			lun_offset=$(( ${#lu_name_components[@]} - 1 ))
-			local lun_arg="-n ${lu_name_components[$lun_offset]}"
+		if [[ "$3" != "1" ]]; then
+			DEFERRED_LUS[${#DEFERRED_LUS[@]}]="$lu_name"
+			return
+		else
+			local lun_arg=""
 		fi
 	else
 		local lun_arg="-n $lun"
@@ -666,37 +667,57 @@ function config_view () {
 		lu_prefix_ptr="lu_prefix"
 	fi
 
-	"$ZFS" list -H -r -t volume "${!lu_prefix_ptr}" | \
-	    while read lu_name rest; do
-		if [[ "$lu_name" == "no" ]]; then
-			break
-		fi
+	DEFERRED_LUS=( )
 
-		# Filter the returned list by the array of LUs in logical_units
-		# (if it exists)
-		if [[ "${logical_units[@]}" == "" ]] || \
-		   [[ "${logical_units[@]}" =~ "\\<$lu_name\\>" ]]; then
-			config_view_on_lu "$view" "$lu_name"
-		fi
-	done
+	"$ZFS" list -H -r -t volume "${!lu_prefix_ptr}" | (
+		# This must take place in an explicit sub-shell to pass the
+		# changes in DEFERRED_LUS out from config_view_on_lu
+		while read lu_name rest; do
+			if [[ "$lu_name" == "no" ]]; then
+				break
+			fi
+
+			# Filter the returned list by the array of LUs in
+			# logical_units (if it exists)
+			if [[ "${logical_units[@]}" == "" ]] || \
+			   [[ "${logical_units[@]}" =~ "\\<$lu_name\\>" ]]; then
+				config_view_on_lu "$view" "$lu_name" 0
+			fi
+		done
+
+		for lu_name in ${DEFERRED_LUS[@]}; do
+			config_view_on_lu "$view" "$lu_name" 1
+		done
+	)
 }
 
 # Adds a default "all-access" view onto all configured LUs (either from the
 # logical_units array or onto all ZFS volumes on the pool). This is called only
 # when there are no views configured in stmf-ha.conf.
 function config_add_default_views () {
+	DEFERRED_LUS=( )
+
 	if [[ "${#logical_units[@]}" == 0 ]]; then
-		"$ZFS" list -rH -t volume "$POOL" | while read lu rest; do
-			if [[ "$lu" == "no" ]]; then
-				break;
-			fi
-			config_view_on_lu "default_view" "$lu"
-		done
+		"$ZFS" list -rH -t volume "$POOL" | (
+			while read lu rest; do
+				if [[ "$lu" == "no" ]]; then
+					break;
+				fi
+				config_view_on_lu "default_view" "$lu" 0
+			done
+			for lu_name in ${DEFERRED_LUS[@]}; do
+				config_view_on_lu "default_view" "$lu_name" 1
+			done
+		)
 	else
 		for lu in ${logical_units[@]}; do
-			config_view_on_lu "default_view" "$lu"
+			config_view_on_lu "default_view" "$lu" 0
+		done
+		for lu_name in ${DEFERRED_LUS[@]}; do
+			config_view_on_lu "default_view" "$lu_name" 1
 		done
 	fi
+
 }
 
 # Starts and configures STMF-HA on a ZFS pool. This function can also be called
