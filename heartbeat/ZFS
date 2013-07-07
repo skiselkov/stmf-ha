@@ -57,6 +57,13 @@ The name of the ZFS pool to manage, e.g. "tank".
 <shortdesc lang="en">ZFS pool name</shortdesc>
 <content type="string" default="" />
 </parameter>
+<parameter name="importargs" unique="0" required="0">
+<longdesc lang="en">
+Arguments to zpool import, e.g. "-d /dev/disk/by-id".
+</longdesc>
+<shortdesc lang="en">Import arguments</shortdesc>
+<content type="string" default="" />
+</parameter>
 </parameters>
 
 <actions>
@@ -96,7 +103,7 @@ zpool_import () {
         #   -o cachefile=none : the import should be temporary, so do not
         #        cache it persistently (across machine reboots). We want
         #        the CRM to explicitly control imports of this pool.
-        if zpool import -f -o cachefile=none "$OCF_RESKEY_pool" ; then
+        if zpool import -f $OCF_RESKEY_importargs -o cachefile=none "$OCF_RESKEY_pool" ; then
             debug_log "import successful"
             if [ -x "${HELPERS_DIR}/zfs-helper" ]; then
                 debug_log "post-import: starting"
@@ -174,7 +181,7 @@ zpool_validate () {
     fi
 
     # Check that the pool can be imported
-    if zpool import | grep 'pool:' | grep "\\<$OCF_RESKEY_pool\\>" > /dev/null;
+    if zpool import $OCF_RESKEY_importargs | grep 'pool:' | grep "\\<$OCF_RESKEY_pool\\>" > /dev/null;
     then
         return $OCF_SUCCESS
     else
