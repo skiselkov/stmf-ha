@@ -37,6 +37,7 @@ POOL="$2"
 
 LU_GUID_PROP="org.illumos.stmf-ha:guid"
 LU_NUM_PROP="org.illumos.stmf-ha:lun"
+LU_BLK_PROP="org.illumos.stmf-ha:blk"
 
 ALTERED_TPGS=( )
 
@@ -162,6 +163,20 @@ function lu_make_guid () {
 		guid="600144F${guid:0:25}"
 	fi
 	echo "$guid"
+}
+
+# Gets the desired LU block size, in bytes.
+#
+# Arguments:
+#	$1: the name of the ZFS volume which backs this LU.
+function lu_get_blk () {
+	# Read the ZFS property
+	local blk=$(zfs get -H -o value "$LU_BLK_PROP" "$1")
+	if [[ $? != 0 ]] || [[ "$blk" == "-" ]]; then
+		# If it's not set, default to 512 bytes
+		blk="512"
+	fi
+	echo "$blk"
 }
 
 # Checks whether a target is online.
@@ -437,13 +452,14 @@ function delete_iscsi_tpg () {
 function config_lu () {
 	local lu="$1"
 	local lu_guid=$(lu_make_guid "$lu")
+	local lu_blk=$(lu_get_blk "$lu")
 	debug_log "  Configuring LU $lu_guid"
 
 	if ! lu_exists "$lu_guid" ; then
 		# Don't bother with import-lu, re-creating the LU is equivalent
 		# (we stash the GUID in a separate user-property) to allow for
 		# LU renaming.
-		do_cmd "$STMFADM" create-lu -p guid="$lu_guid" \
+		do_cmd "$STMFADM" create-lu -p guid="$lu_guid" -p blk="$lu_blk" \
 		    "/dev/zvol/rdsk/$lu" > /dev/null
 		do_cmd "$ZFS" set "$LU_GUID_PROP=$lu_guid" "$lu"
 	fi
