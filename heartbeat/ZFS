@@ -24,7 +24,7 @@
 
 # Set the variable below to '1' to enable zpool import/export logging.
 # This is useful to determine how long these operations take on your system.
-# DEBUG=0
+DEBUG=0
 DEBUGLOG="/var/log/ZFS_cluster_debug.log"
 
 USAGE="usage: $0 {start|stop|status|monitor|validate-all|meta-data}";
@@ -79,7 +79,7 @@ END
 }
 
 zpool_is_imported () {
-    zpool list -H "$OCF_RESKEY_pool" > /dev/null
+    zpool list -H "$OCF_RESKEY_pool" > /dev/null 2>/dev/null
 }
 
 # Forcibly imports a ZFS pool, mounting all of its auto-mounted filesystems
